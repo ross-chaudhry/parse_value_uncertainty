@@ -1,17 +1,21 @@
 ! ------------------------------------------------------------------------------
+! -- Parse Value Uncertainty
 ! -- Constructs string for a given value and uncertainty
+! -- Author: Ross S. Chaudhry, August 2018
 !
-! -- For example, 1.23456d-5 \pm 7.89d-7 produces 1.23(8) x 10^-5
-! -- Default output is for display with latex via siunitx
+! -- Sample usage:
+!        use parse_value_uncertainty, only pvu_gen_str
+!        ...
+!        call pvu_gen_str( 1.23456, 0.087, str_out, ier)
+! -- str_out now contains '\num{1.23 +- 0.09}', suitable for siunitx in latex
 !
-! -- Output type and some options are configurable.
-! -- Self test is included, primarily for development.
+! -- Designed for REAQCT (Univ. of Minnesota's Quasi-Classical Trajectory code),
+! -- this module was adapted for general use.
+! -- Hosted on the author's personal github with MIT license:
+! -- https://github.com/ross-chaudhry
 !
-! -- Works via the following procedure:
-!     ~ Determine the number of digits and SI exponent for uncertainty, ie 3e-5
-!       Number of digits is typically 1, unless uncertainty is 10-19 (default)
-!     ~ Least significant digit of value is the LSD of uncertainty
-!     ~ RSCFIX
+! -- Output type, positive and negative threshold to use scientific notation,
+! -- and uncertainty significant figure behavior are configurable.
 !
 ! -- A good reference is Taylor, "An Introduction to Error Analysis", 1982.
 ! -- Also Taylor and Kuyatt, "Guidelines for Evaluating and Expressing the
@@ -19,31 +23,36 @@
 !
 ! Public Subroutines
 ! ------------------
-!    pvu_config      - Set configuration options
-!    pvu_gen_str     - Generate string from value and uncertainty
-!    pvu_self_test   - Check things are working, primarily a dev tool
+!    pvu_config                     - Set configuration options
+!    pvu_gen_str                    - Generate string from value and uncertainty
+!    pvu_self_test                  - Check things are working
 !
 ! Private Subroutines
 ! -------------------
-!    pvu_uncert      - Compute string of uncertainty, and LSD
+!    pvu_process_uncertainty        - Compute string of uncertainty, and LSD
+!    pvu_test_process_uncertainty   - Check known uncertainty vs computed
+!    pvu_test_gen_str               - Check known val/err pair vs computed
+!    pvu_test_tex_write             - Write single number to latex output
+!    pvu_test_tex_init              - Open and init latex output
+!    pvu_test_tex_finalize          - Close and finalize latex output
 !
 ! Configuration Options
 ! ---------------------
-! -- Set configuration options using pvu_config, using the option as
-! -- an input varible, eg.
-! -- pvu_config(output_format=OUTPUT_FORMAT_SIUNITX_PLUSMINUS, &
-!       threshold_sn_pos=5)
+! -- pvu_config sets configuration options using optional input variable, eg.
+! pvu_config(output_format=OUTPUT_FORMAT_SIUNITX_PLUSMINUS, threshold_sn_pos=5)
 !
 !    output_format      Format of output string.
 !                       Strings passed to siunitx will be parsed by its rules
 !                       Latex output should be used to check siunitx
-!                       Possible values:
+!        Possible values:
 !
 !        OUTPUT_FORMAT_SIUNITX_PLUSMINUS
 !        Latex with sinutix, with plus-minus, eg '\num{1.23 \pm 0.08 e-5}'
 !
 !        OUTPUT_FORMAT_SIUNITX_PARENTHESIS
 !        Latex with siunitx, with parenthesis, eg '\num{1.23(8) e-5}'
+!        Note that siunitx will accept either format and may be configured
+!        to give various outputs.
 !
 !        OUTPUT_FORMAT_LATEX_PLUSMINUS
 !        Latex vanilla with pm, eg '1.23 \pm 0.08 \times 10^{-5}'
@@ -51,7 +60,7 @@
 !        OUTPUT_FORMAT_LATEX_PARENTHESIS
 !        Latex vanilla with parenthesis, eg '1.23(8) \times 10^{-5}'
 !
-!        OUTPUT_FORMAT_DEFAULT      (is OUTPUT_FORMAT_SIUNITX_PLUSMINUS)
+!        OUTPUT_FORMAT_DEFAULT      set to OUTPUT_FORMAT_SIUNITX_PLUSMINUS
 !
 !    threshold_sn_pos   Minimum positive exponent that requires scientific not.
 !                       Default value is 3
@@ -59,25 +68,25 @@
 !                       but             123  \pm 1 is 123(1)
 !                       If the uncertainty is too large, revert to SN
 !                       regardless, eg 123 \pm 35 is 1.2(4) e2
-!                       Possible values:
+!        Possible values:
 !
 !        integer value from 1 to 10
 !
-!        THRESHOLD_SN_POS_DEFAULT   (is 3)
-!
+!        THRESHOLD_SN_POS_DEFAULT   set to 3
 !
 !    threshold_sn_neg   Minimum negative exponent that requires scientific not.
 !                       Default value is 3
 !                       Eg, by default, 0.0043 \pm 0.0005 is 4.3(5) e-3
 !                       but             0.043  \pm 0.005  is 0.043(5)
-!                       Possible values:
+!        Possible values:
 !
 !        integer value from 1 to 10    (positive int corresponds to neg. exp)
 !
-!        THRESHOLD_SN_NEG_DEFAULT   (is 4)
+!        THRESHOLD_SN_NEG_DEFAULT   set to 3
 !
 !    mode_uncert_sf     Method to compute the number of significant figures
 !                       in the uncertainty.
+!        Possible values:
 !
 !        MODE_UNCERT_SF_ONE
 !        Always one significant figure (0.12 > 0.1)
@@ -88,20 +97,19 @@
 !        Called 'fifteen' because that's the largest uncertainty mag achievable
 !
 !        MODE_UNCERT_SF_NINETEEN
-!        If two sig fig. yields 10 to 19, two digits.
+!        If two sig fig. yields 10 to 19, use two digits.
 !        This is the other interpretation of the recommendation of Taylor,
-!        and the one RSC perfers.
+!        and the one this author perfers.
 !        Called 'nineteen' for same reason as 'fifteen'
 !        This means 'uncertainty of uncertainty' is largest with 3 (3.5/2.5=40%)
 !        which is not terrible.
-!        Without this, largest is with 2 (2.5/1.5=67%), which is a lot.
+!        Without this, largest is with 2 (2.5/1.5=67%), which is maybe too much.
 !        Note also that 2 has largest 'uncertainty of uncertainty' even with
 !        MODE_UNCERT_SF_ONE because 15/9.5=58%.
 !
-!        MODE_UNCERT_SF_DEFAULT     (is MODE_UNCERT_SF_NINETEEN)
+!        MODE_UNCERT_SF_DEFAULT     set to MODE_UNCERT_SF_NINETEEN
 !
-!    local_debug        Whether verbose debugging output is on, true/false
-!
+!    ld                 Print verbose output (Local Debugging), true/false
 !
 ! ------------------------------------------------------------------------------
 
@@ -110,7 +118,7 @@ module parse_value_uncertainty
    implicit none
 
    ! -- Everything here is private by default, proper OOP
-   ! -- Subroutines (listed here) are public, and CONFIG_PARAMS are public
+   ! -- Exceptions are public subroutines (listed here) and CONFIG_PARAMS
    private
    public :: pvu_config, pvu_gen_str, pvu_self_test
 
@@ -167,16 +175,16 @@ contains
 ! -- values $VAR_DESCRIPT and set with pvu_config(ier, $var=$VAR_DESCRIPT)
 ! ------------------------------------------------------------------------------
 subroutine pvu_config( ier, output_format, threshold_sn_pos, threshold_sn_neg, &
-      mode_uncert_sf, debugging)
+      mode_uncert_sf, ld_in)
    integer, intent(OUT) :: ier
    integer, intent(IN), optional :: output_format, threshold_sn_pos, &
       threshold_sn_neg, mode_uncert_sf
-   logical, intent(IN), optional :: debugging
+   logical, intent(IN), optional :: ld_in
 
    ier = 0
 
-   if (present(debugging)) then
-      ld = debugging
+   if (present(ld_in)) then
+      ld = ld_in
       if (ld) write(olun,*) '== PVU debugging is on'
    endif
 
@@ -236,7 +244,7 @@ subroutine pvu_gen_str( real_val, real_err, str_out, ier)
    character(len=strlen) :: str_exp, str_exp_times, str_exp_e
    integer :: sf_err, lsd_exp_err, exp_both, tmp_val, dig, l
    real(wp) :: shifted_val, shifted_err
-   
+
    ier = 0
 
    ! -- Some checks to start
@@ -257,14 +265,14 @@ subroutine pvu_gen_str( real_val, real_err, str_out, ier)
    endif
 
    if (real_err==0._wp) then
-      ! -- By convention, lsd is ones, and err is 0
+      ! -- Should display error as '0', and use ones as lsd
       str_err_paren = '0'
       sf_err = 1
       lsd_exp_err = 0
    else
       call pvu_process_uncertainty( real_err, str_err_paren, sf_err, lsd_exp_err, ier)
    endif
-   
+
    ! -- Determine SN exponent
    ! -- Place decimal at lsd_exp_err and round
    tmp_val = abs(NINT( real_val * 10._wp**(-1*lsd_exp_err) ))
@@ -274,7 +282,7 @@ subroutine pvu_gen_str( real_val, real_err, str_out, ier)
       ! -- Error should have lsd in single, so it can be 0(12) e1
       exp_both = lsd_exp_err
    else
-      ! -- Determine exponent based on this value, and correct for the shift
+      ! -- Determine exponent based on val, and correct for the shift
       exp_both = FLOOR(log10(real(tmp_val,wp)))
       exp_both = exp_both + lsd_exp_err
    endif
@@ -357,18 +365,18 @@ subroutine pvu_gen_str( real_val, real_err, str_out, ier)
          trim(str_exp_e)//'}'
 
    case (OUTPUT_FORMAT_LATEX_PLUSMINUS)
-      ! -- 1234 \pm 0.012 \times 10^{-3}
+      ! -- $1234 \pm 0.012 \times 10^{-3}$
       str_out = '$'//trim(str_val)//' \pm '//trim(str_err_pm)//&
          trim(str_exp_times)//'$'
 
    case (OUTPUT_FORMAT_LATEX_PARENTHESIS)
-      ! -- 1234(12) \times 10^{-3}
+      ! -- $1234(12) \times 10^{-3}$
       str_out = '$'//trim(str_val)//'('//trim(str_err_paren)//')'//&
          trim(str_exp_times)//'$'
 
    end select
 
-   if (ld) write(olun,'(a,2(es14.8,2x),a)') ' == Generated str: ', &
+   if (ld) write(olun,'(a,2(es15.8,2x),a)') ' == Generated str: ', &
       real_val, real_err, '  "'//trim(str_out)//'"'
 
    return
@@ -396,12 +404,14 @@ subroutine pvu_process_uncertainty( real_err, str_err, sf_err, lsd_exp_err, ier)
       goto 99
    endif
 
-   ! -- First, get exponent and normalize, eg 1.23, 1,49, 1.79, 1.95, 4.67, 9.87, 9.98
+   ! -- First, get exponent and normalize
+   ! -- eg 1.23, 1,49, 1.79, 1.95, 4.67, 9.87, 9.98
    exp_tmp = FLOOR(log10(real_err))
    normalized = real_err * 10._wp**(-1*exp_tmp)
 
    ! -- Our first special case, if the number is 9.5 or more, it will round to 10
    ! -- when rounding to one digit, so divde out an extra 10
+   ! -- If we ever want uncertainty like (99), this line will be wrong
    if (normalized>=9.5_wp) then
       exp_tmp = exp_tmp + 1
       normalized = real_err * 10._wp**(-1*exp_tmp)
@@ -433,8 +443,6 @@ subroutine pvu_process_uncertainty( real_err, str_err, sf_err, lsd_exp_err, ier)
       sf_err = 1
    case (MODE_UNCERT_SF_FIFTEEN)
       ! -- If the single digit is one, then we add an extra digit
-      ! -- (fifteen isn't actually the cutoff, because 14.8 > 15 but 15.1 > 2)
-      ! -- This is the recommendation from Taylor, p. RSCFIX
       if (one_digit==1) then
          sf_err = 2
       else
@@ -442,7 +450,6 @@ subroutine pvu_process_uncertainty( real_err, str_err, sf_err, lsd_exp_err, ier)
       endif
    case (MODE_UNCERT_SF_NINETEEN)
       ! -- If the first digit of two_digit is one, two digits
-      ! -- This is what RSC was taught
       if (two_digit<20) then
          sf_err = 2
       else
@@ -460,7 +467,7 @@ subroutine pvu_process_uncertainty( real_err, str_err, sf_err, lsd_exp_err, ier)
    write(str_err,'(i4)') NINT( real_err * 10._wp**(-1*lsd_exp_err) )
    str_err = adjustl(str_err)
 
-   if (ld) write(olun,'(a,2x,es14.8,2x,a5,2i4)') ' == Processed uncertainty: ',&
+   if (ld) write(olun,'(a,2x,es15.8,2x,a5,2i4)') ' == Processed uncertainty: ',&
       real_err, '"'//trim(str_err)//'"', sf_err, lsd_exp_err
 
    if (sf_err/=len_trim(str_err)) then
@@ -496,7 +503,8 @@ subroutine pvu_test_process_uncertainty( real_err, expected_str, expected_sf, &
    if ( (received_str/=expected_str) .OR. (received_sf/=expected_sf) .OR. &
          (received_lsd_exp/=expected_lsd_exp) ) then
       write(olun,*) '** Failed test for uncertainty: ', real_err
-      write(olun,*) '** str:     "'//trim(expected_str)//'" "'//trim(received_str)//'"'
+      write(olun,*) '** str:     "'//trim(expected_str)//&
+         '" "'//trim(received_str)//'"'
       write(olun,*) '** sf:      ', expected_sf, received_sf
       write(olun,*) '** lsd_exp: ', expected_lsd_exp, received_lsd_exp
       goto 99
@@ -605,7 +613,6 @@ subroutine pvu_test_tex_finalize(ier)
 
 end subroutine pvu_test_tex_finalize
 
-
 ! ------------------------------------------------------------------------------
 ! -- Perform self test, primarily to aid development. Only works with defaults.
 ! -- On success, PASSED is printed with ier=0
@@ -666,7 +673,9 @@ subroutine pvu_self_test(ier)
    if (jer/=0) ier = 2
    call pvu_test_gen_str(8.123_wp, 12.024_wp, '\num{8 \pm 12}', jer)
    if (jer/=0) ier = 2
-   call pvu_test_gen_str(99.99999_wp, 0.001_wp, '\num{100.0000 \pm 0.0010}', jer)
+   call pvu_test_gen_str(99.999_wp, 0.01_wp, '\num{99.999 \pm 0.010}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(99.9999_wp, 0.01_wp, '\num{100.000 \pm 0.010}', jer)
    if (jer/=0) ier = 2
    call pvu_test_gen_str(99.99999_wp, 12._wp, '\num{100 \pm 12}', jer)
    if (jer/=0) ier = 2

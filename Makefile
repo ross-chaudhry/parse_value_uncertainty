@@ -1,6 +1,10 @@
-# -- Build options set for gfortran 8.2
+# -- Gfortran, 8.2 (primary)
 FC = gfortran
 FCFLAGS = -Og -Wall -Wcharacter-truncation -Wimplicit-interface -Wunused-parameter -fcheck=all -std=f2008 -pedantic -fbacktrace
+
+# -- Gfortran, 4.4.7 (tested)
+# FC = gfortran
+# FCFLAGS = -O0 -Wall -Wcharacter-truncation -Wimplicit-interface -Wunused-parameter -fbounds-check -fcheck-array-temporaries -std=f2008 -pedantic -fbacktrace
 
 PROGRAMS = self_test_driver
 all: $(PROGRAMS)
