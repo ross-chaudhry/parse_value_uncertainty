@@ -1,7 +1,7 @@
 ! ------------------------------------------------------------------------------
 ! -- Constructs string for a given value and uncertainty
 !
-! -- For example, 1.23456d-5 +- 7.89d-7 produces 1.23(8) x 10^-5
+! -- For example, 1.23456d-5 \pm 7.89d-7 produces 1.23(8) x 10^-5
 ! -- Default output is for display with latex via siunitx
 !
 ! -- Output type and some options are configurable.
@@ -36,7 +36,7 @@
 !                       Possible values:
 !
 !        OUTPUT_FORMAT_SIUNITX_PLUSMINUS
-!        Latex with sinutix, with plus-minus, eg '\num{1.23 +- 0.08 e-5}'
+!        Latex with sinutix, with plus-minus, eg '\num{1.23 \pm 0.08 e-5}'
 !
 !        OUTPUT_FORMAT_SIUNITX_PARENTHESIS
 !        Latex with siunitx, with parenthesis, eg '\num{1.23(8) e-5}'
@@ -51,10 +51,10 @@
 !
 !    threshold_sn_pos   Minimum positive exponent that requires scientific not.
 !                       Default value is 3
-!                       Eg, by default, 1234 +- 1 is 1.234(1) e3
-!                       but             123  +- 1 is 123(1)
+!                       Eg, by default, 1234 \pm 1 is 1.234(1) e3
+!                       but             123  \pm 1 is 123(1)
 !                       If the uncertainty is too large, revert to SN
-!                       regardless, eg 123 +- 35 is 1.2(4) e2
+!                       regardless, eg 123 \pm 35 is 1.2(4) e2
 !                       Possible values:
 !
 !        integer value from 1 to 10
@@ -64,13 +64,13 @@
 !
 !    threshold_sn_neg   Minimum negative exponent that requires scientific not.
 !                       Default value is 3
-!                       Eg, by default, 0.0043 +- 0.0005 is 4.3(5) e-3
-!                       but             0.043  +- 0.005  is 0.043(5)
+!                       Eg, by default, 0.0043 \pm 0.0005 is 4.3(5) e-3
+!                       but             0.043  \pm 0.005  is 0.043(5)
 !                       Possible values:
 !
 !        integer value from 1 to 10    (positive int corresponds to neg. exp)
 !
-!        THRESHOLD_SN_NEG_DEFAULT   (is 3)
+!        THRESHOLD_SN_NEG_DEFAULT   (is 4)
 !
 !    mode_uncert_sf     Method to compute the number of significant figures
 !                       in the uncertainty.
@@ -119,7 +119,7 @@ module parse_value_uncertainty
    integer, parameter :: OUTPUT_FORMAT_DEFAULT = OUTPUT_FORMAT_SIUNITX_PLUSMINUS
 
    integer, parameter :: THRESHOLD_SN_POS_DEFAULT            = 3
-   integer, parameter :: THRESHOLD_SN_NEG_DEFAULT            = 3
+   integer, parameter :: THRESHOLD_SN_NEG_DEFAULT            = 4
 
    integer, parameter :: MODE_UNCERT_SF_ONE = 2001
    integer, parameter :: MODE_UNCERT_SF_FIFTEEN = 2002
@@ -148,14 +148,148 @@ subroutine pvu_gen_str( real_val, real_err, str_out, ier)
    real(wp), intent(IN) :: real_val, real_err
    character(len=*), intent(OUT) :: str_out     ! -- Let this string be any size
    integer, intent(OUT) :: ier
+   character(len=strlen) :: str_err_paren, str_err_pm, str_val, fltfmt
+   character(len=strlen) :: str_exp, str_exp_times, str_exp_e
+   integer :: sf_err, lsd_exp_err, exp_both, tmp_val, dig, l
+   real(wp) :: shifted_val, shifted_err
    
    ier = 0
 
-   str_out = ''
+   ! -- Some checks to start
+   if (real_err<0._wp) then
+      write(olun,*) '** Error, uncertainty is not allowed to be negative'
+      goto 99
+   endif
+   if (real_err==0._wp) then
+      ! -- This is allowed only under specific cases
+      ! -- Use tolerance here? Could be 1.0+epsilon, right? Hm.
+      if (.not.ANY(real_val==list_allowed_no_uncert)) then
+         write(olun,*) '** Error, uncertainty is identically 0'
+         write(olun,*) '** This is sometimes allowed, but real_val=', real_val
+         goto 99
+      else
+         ! -- Could print warning, nah
+      endif
+   endif
 
-!    return
-! 99 write(olun,*) '** Error in subroutine pvu_gen_str'
-!    ier = 1
+   if (real_err==0._wp) then
+      ! -- By convention, lsd is ones, and err is 0
+      str_err_paren = '0'
+      sf_err = 1
+      lsd_exp_err = 0
+   else
+      call pvu_process_uncertainty( real_err, str_err_paren, sf_err, lsd_exp_err, ier)
+   endif
+   
+   ! -- Determine SN exponent
+   ! -- Place decimal at lsd_exp_err and round
+   tmp_val = abs(NINT( real_val * 10._wp**(-1*lsd_exp_err) ))
+
+   if (tmp_val==0) then
+      ! -- If 0, err is larger than val (probably by a lot), so use err value
+      ! -- Error should have lsd in single, so it can be 0(12) e1
+      exp_both = lsd_exp_err
+   else
+      ! -- Determine exponent based on this value, and correct for the shift
+      exp_both = FLOOR(log10(real(tmp_val,wp)))
+      exp_both = exp_both + lsd_exp_err
+   endif
+
+   ! -- Now, check if exp_both is close to 0 so we may revert to no SN
+   if ( (exp_both<0) .AND. (exp_both>(-1*cur_threshold_sn_neg)) ) then
+      ! -- Our exponent would be negative and not as small as -threshold
+      exp_both = 0
+   elseif ( (exp_both>0) .AND. (exp_both<cur_threshold_sn_pos) ) then
+      ! -- Our exponent would be positive and not as large as threshold
+      ! -- Can revert if uncertainty is small enough
+      if (lsd_exp_err<=0) then
+         exp_both = 0
+      endif
+   endif
+
+   ! -- How many digits should we print after the decimal?
+   ! -- This is the difference between lsd_exp_err and exp_both
+   dig = exp_both - lsd_exp_err
+
+   if ( (dig>10) .OR. (dig<0) ) then
+      write(olun,*) '** Error, digits after decimal seems wrong: ', dig
+      goto 99
+   endif
+
+   ! -- We have our SN exponent, compute values
+   shifted_val = real_val * 10._wp**(-1*exp_both)
+   shifted_err = real_err * 10._wp**(-1*exp_both)
+
+   ! -- Write val and err to floats with the right number of digits
+   ! -- 10 is because we could have many leading values if config
+   write(fltfmt,'(a,i2.2,a,i2.2,a)') '(f', 10+dig, '.', dig, ')'
+
+   write(str_val,fltfmt) shifted_val
+   write(str_err_pm,fltfmt) shifted_err
+
+   str_val = adjustl(str_val)
+   str_err_pm = adjustl(str_err_pm)
+
+   ! -- siunitx has weird behavior. If a number is given as 3. ,
+   ! -- it is interpreted as having 2 sig figures, and printed as 3.0
+   ! -- Also, there appears to be a bug when printing something as 3. \pm 3.
+   ! -- Therefore, strip trailing decimal points from both the val and err
+   ! -- tex SE is here: https://tex.stackexchange.com/questions/446074/wrong-value-with-decimals-and-uncertainty-in-siunitx
+   l = len_trim(str_val)
+   if (str_val(l:l)=='.') str_val(l:l) = ' '
+
+   l = len_trim(str_err_pm)
+   if (str_err_pm(l:l)=='.') str_err_pm(l:l) = ' '
+
+   ! -- Also write number in SI exponent, and two forms for convenience
+   if (exp_both/=0) then
+      write(str_exp,'(i4)') exp_both
+      str_exp = adjustl(str_exp)
+
+      str_exp_e = ' e'//trim(str_exp)
+      str_exp_times = ' \times 10^{'//trim(str_exp)//'}'
+   else
+      str_exp = ''
+      str_exp_e = ''
+      str_exp_times = ''
+   endif
+
+   ! -- At this point, we have the following (eg)
+   !     ~ str_val         1.234
+   !     ~ str_err_pm      0.012
+   !     ~ str_err_paren   12
+   !     ~ str_exp         -3
+
+   ! -- Now we write depending on the format
+   select case (cur_output_format)
+   case (OUTPUT_FORMAT_SIUNITX_PLUSMINUS)
+      ! -- \num{1234 \pm 0.012 e-3}
+      str_out = '\num{'//trim(str_val)//' \pm '//trim(str_err_pm)//&
+         trim(str_exp_e)//'}'
+
+   case (OUTPUT_FORMAT_SIUNITX_PARENTHESIS)
+      ! -- \num{1234(12) e-3}
+      str_out = '\num{'//trim(str_val)//'('//trim(str_err_paren)//')'//&
+         trim(str_exp_e)//'}'
+
+   case (OUTPUT_FORMAT_LATEX_PLUSMINUS)
+      ! -- 1234 \pm 0.012 \times 10^{-3}
+      str_out = trim(str_val)//' \pm '//trim(str_err_pm)//&
+         trim(str_exp_times)
+
+   case (OUTPUT_FORMAT_LATEX_PARENTHESIS)
+      ! -- 1234(12) \times 10^{-3}
+      str_out = trim(str_val)//'('//trim(str_err_paren)//')'//&
+         trim(str_exp_times)
+
+   end select
+
+   if (ld) write(olun,'(a,2(es14.8,2x),a)') ' == Generated str: ', &
+      real_val, real_err, '  "'//trim(str_out)//'"'
+
+   return
+99 write(olun,*) '** Error in subroutine pvu_gen_str'
+   ier = 1
 end subroutine pvu_gen_str
 
 ! ------------------------------------------------------------------------------
@@ -258,7 +392,7 @@ end subroutine pvu_process_uncertainty
 
 ! ------------------------------------------------------------------------------
 ! -- Test process_uncertainty by giving a number and the expected output
-! -- For now, a failed test is catastrophic, ie causes full stop
+! -- For now, failed test is the same as error in the test
 ! ------------------------------------------------------------------------------
 subroutine pvu_test_process_uncertainty( real_err, expected_str, expected_sf, &
       expected_lsd_exp, ier)
@@ -268,6 +402,8 @@ subroutine pvu_test_process_uncertainty( real_err, expected_str, expected_sf, &
    integer, intent(OUT) :: ier
    integer :: received_sf, received_lsd_exp
    character(strlen) :: received_str
+
+   ier = 0
 
    call pvu_process_uncertainty( real_err, received_str, received_sf, &
       received_lsd_exp, ier )
@@ -288,6 +424,34 @@ subroutine pvu_test_process_uncertainty( real_err, expected_str, expected_sf, &
 end subroutine pvu_test_process_uncertainty
 
 ! ------------------------------------------------------------------------------
+! -- Call the gen str routine and compare to expected string
+! -- For now, failed test is the same as error in the test
+! ------------------------------------------------------------------------------
+subroutine pvu_test_gen_str( real_val, real_err, expected_str, ier)
+   real(wp), intent(IN) :: real_val, real_err
+   character(*), intent(IN) :: expected_str
+   integer, intent(OUT) :: ier
+   character(len=strlen) :: received_str
+
+   ier = 0
+
+   call pvu_gen_str( real_val, real_err, received_str, ier)
+   if (ier/=0) goto 99
+
+   if (received_str/=expected_str) then
+      write(olun,*) '** Failed test for gen_str'
+      write(olun,*) '** val, err: ', real_val, real_err
+      write(olun,*) '** expected, received: "'//trim(expected_str)//'" "'// &
+         trim(received_str)//'"'
+      goto 99
+   endif
+
+   return
+99 write(olun,*) '** Error in subroutine pvu_test_gen_str'
+   ier = 1
+end subroutine pvu_test_gen_str
+
+! ------------------------------------------------------------------------------
 ! -- Perform self test, primarily to aid development. Only works with defaults.
 ! -- On success, PASSED is printed with ier=0
 ! -- On failure, FAILED is printed with ier=1
@@ -298,6 +462,7 @@ subroutine pvu_self_test(ier)
 
    ier = 0
 
+   ! -- Test just uncertainty
    call pvu_test_process_uncertainty(0.0123_wp, '12', 2, -3, jer)
    if (jer/=0) ier = 2
    call pvu_test_process_uncertainty(0.0149_wp, '15', 2, -3, jer)
@@ -319,6 +484,22 @@ subroutine pvu_self_test(ier)
    call pvu_test_process_uncertainty(4e5_wp, '4', 1, 5, jer)
    if (jer/=0) ier = 2
    call pvu_test_process_uncertainty(0.095_wp, '10', 2, -2, jer)
+   if (jer/=0) ier = 2
+
+   ! -- Test full
+   call pvu_test_gen_str(1.234_wp, 0.012_wp, '\num{1.234 \pm 0.012}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(1.234_wp, 0.024_wp, '\num{1.23 \pm 0.02}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(1.234_wp,20.024_wp, '\num{0 \pm 2 e1}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(35.234_wp,0.024_wp, '\num{35.23 \pm 0.02}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(99.99999_wp,0.001_wp, '\num{100.0000 \pm 0.0010}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(99.99999_wp,12._wp, '\num{100 \pm 12}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(99.99999_wp,30._wp, '\num{1.0 \pm 0.3 e2}', jer)
    if (jer/=0) ier = 2
 
    if (ier==0) then
