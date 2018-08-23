@@ -13,6 +13,10 @@
 !     ~ Least significant digit of value is the LSD of uncertainty
 !     ~ RSCFIX
 !
+! -- A good reference is Taylor, "An Introduction to Error Analysis", 1982.
+! -- Also Taylor and Kuyatt, "Guidelines for Evaluating and Expressing the
+! -- Uncertainty of NIST Measurement Results", 1994
+!
 ! Public Subroutines
 ! ------------------
 !    pvu_config      - Set configuration options
@@ -80,15 +84,21 @@
 !
 !        MODE_UNCERT_SF_FIFTEEN
 !        If one sig fig. yields a '1', add an extra digit.
-!        This is the recommendation of Taylor, RSCFIX
+!        This is one interpretation of the recommendation of Taylor (p. 16)
 !        Called 'fifteen' because that's the largest uncertainty mag achievable
 !
 !        MODE_UNCERT_SF_NINETEEN
 !        If two sig fig. yields 10 to 19, two digits.
-!        This is what RSC was taught, he thinks.
+!        This is the other interpretation of the recommendation of Taylor,
+!        and the one RSC perfers.
 !        Called 'nineteen' for same reason as 'fifteen'
+!        This means 'uncertainty of uncertainty' is largest with 3 (3.5/2.5=40%)
+!        which is not terrible.
+!        Without this, largest is with 2 (2.5/1.5=67%), which is a lot.
+!        Note also that 2 has largest 'uncertainty of uncertainty' even with
+!        MODE_UNCERT_SF_ONE because 15/9.5=58%.
 !
-!        MODE_UNCERT_SF_DEFAULT     (is MODE_UNCERT_SF_FIFTEEN)
+!        MODE_UNCERT_SF_DEFAULT     (is MODE_UNCERT_SF_NINETEEN)
 !
 !    local_debug        Whether verbose debugging output is on, true/false
 !
@@ -98,6 +108,11 @@
 module parse_value_uncertainty
    use ISO_FORTRAN_ENV, only : OUTPUT_UNIT
    implicit none
+
+   ! -- Everything here is private by default, proper OOP
+   ! -- Subroutines (listed here) are public, and CONFIG_PARAMS are public
+   private
+   public :: pvu_config, pvu_gen_str, pvu_self_test
 
    ! ===== Base parameters
    ! -- Type of real, should be IEEE double
@@ -110,21 +125,25 @@ module parse_value_uncertainty
    ! -- Default string length. All but input dummy argument should be this
    integer, parameter :: strlen = 200
 
+   ! -- newunit isn't supported by some versions of gfortran I want
+   integer, parameter :: fid_tt = 101
+   character(len=*), parameter :: fname_tex_test = 'pvu_test.tex'
+
    ! ===== Configuration Options
    ! -- Possible values and defaults, as parameters
-   integer, parameter :: OUTPUT_FORMAT_SIUNITX_PLUSMINUS     = 1001
-   integer, parameter :: OUTPUT_FORMAT_SIUNITX_PARENTHESIS   = 1002
-   integer, parameter :: OUTPUT_FORMAT_LATEX_PLUSMINUS       = 1003
-   integer, parameter :: OUTPUT_FORMAT_LATEX_PARENTHESIS     = 1004
-   integer, parameter :: OUTPUT_FORMAT_DEFAULT = OUTPUT_FORMAT_SIUNITX_PLUSMINUS
+   integer, parameter, public :: OUTPUT_FORMAT_SIUNITX_PLUSMINUS     = 1001
+   integer, parameter, public :: OUTPUT_FORMAT_SIUNITX_PARENTHESIS   = 1002
+   integer, parameter, public :: OUTPUT_FORMAT_LATEX_PLUSMINUS       = 1003
+   integer, parameter, public :: OUTPUT_FORMAT_LATEX_PARENTHESIS     = 1004
+   integer, parameter, public :: OUTPUT_FORMAT_DEFAULT = OUTPUT_FORMAT_SIUNITX_PLUSMINUS
 
-   integer, parameter :: THRESHOLD_SN_POS_DEFAULT            = 3
-   integer, parameter :: THRESHOLD_SN_NEG_DEFAULT            = 4
+   integer, parameter, public :: THRESHOLD_SN_POS_DEFAULT            = 3
+   integer, parameter, public :: THRESHOLD_SN_NEG_DEFAULT            = 4
 
-   integer, parameter :: MODE_UNCERT_SF_ONE = 2001
-   integer, parameter :: MODE_UNCERT_SF_FIFTEEN = 2002
-   integer, parameter :: MODE_UNCERT_SF_NINETEEN = 2003
-   integer, parameter :: MODE_UNCERT_SF_DEFAULT = MODE_UNCERT_SF_FIFTEEN
+   integer, parameter, public :: MODE_UNCERT_SF_ONE = 2001
+   integer, parameter, public :: MODE_UNCERT_SF_FIFTEEN = 2002
+   integer, parameter, public :: MODE_UNCERT_SF_NINETEEN = 2003
+   integer, parameter, public :: MODE_UNCERT_SF_DEFAULT = MODE_UNCERT_SF_NINETEEN
 
    ! -- Current value of config options, set to default so no init requied
    integer :: cur_output_format = OUTPUT_FORMAT_DEFAULT
@@ -132,7 +151,7 @@ module parse_value_uncertainty
    integer :: cur_threshold_sn_neg = THRESHOLD_SN_NEG_DEFAULT
    integer :: cur_mode_uncert_sf = MODE_UNCERT_SF_DEFAULT
 
-   logical :: ld = .true.     ! -- Local Debugging
+   logical :: ld = .false.       ! -- Local debugging, short special name
 
    ! -- List of numbers that are allowed to have 0 uncertainty
    integer, parameter :: n_allowed_no_uncert = 3
@@ -140,6 +159,71 @@ module parse_value_uncertainty
       list_allowed_no_uncert = [ 0._wp, 1._wp, 100._wp ]
 
 contains
+
+! ------------------------------------------------------------------------------
+! -- Set internal configuration variables for this module
+! -- See the top of this module for details
+! -- The notation is, for each variable $var, there are possible
+! -- values $VAR_DESCRIPT and set with pvu_config(ier, $var=$VAR_DESCRIPT)
+! ------------------------------------------------------------------------------
+subroutine pvu_config( ier, output_format, threshold_sn_pos, threshold_sn_neg, &
+      mode_uncert_sf, debugging)
+   integer, intent(OUT) :: ier
+   integer, intent(IN), optional :: output_format, threshold_sn_pos, &
+      threshold_sn_neg, mode_uncert_sf
+   logical, intent(IN), optional :: debugging
+
+   ier = 0
+
+   if (present(debugging)) then
+      ld = debugging
+      if (ld) write(olun,*) '== PVU debugging is on'
+   endif
+
+   if (present(output_format)) then
+      if ( (output_format<OUTPUT_FORMAT_SIUNITX_PLUSMINUS) .OR. &
+            (output_format>OUTPUT_FORMAT_LATEX_PARENTHESIS) ) then
+         write(olun,*) '** Error, invalid output format: ', output_format
+         goto 99
+      else
+         cur_output_format = output_format
+      endif
+   endif
+
+   if (present(threshold_sn_pos)) then
+      if ( (threshold_sn_pos<1) .OR. (threshold_sn_pos>9) ) then
+         write(olun,*) '** Error, invalid threshold_sn_pos:', threshold_sn_pos
+         write(olun,*) '** Should be between 1 and 9 (inclusive)'
+         goto 99
+      else
+         cur_threshold_sn_pos = threshold_sn_pos
+      endif
+   endif
+
+   if (present(threshold_sn_neg)) then
+      if ( (threshold_sn_neg<1) .OR. (threshold_sn_neg>9) ) then
+         write(olun,*) '** Error, invalid threshold_sn_neg:', threshold_sn_neg
+         write(olun,*) '** Should be between 1 and 9 (inclusive)'
+         goto 99
+      else
+         cur_threshold_sn_neg = threshold_sn_neg
+      endif
+   endif
+
+   if (present(mode_uncert_sf)) then
+      if ( (mode_uncert_sf<MODE_UNCERT_SF_ONE) .OR. &
+            (mode_uncert_sf>MODE_UNCERT_SF_NINETEEN) ) then
+         write(olun,*) '** Error, invalid mode_uncert_sf: ', mode_uncert_sf
+         goto 99
+      else
+         cur_mode_uncert_sf = mode_uncert_sf
+      endif
+   endif
+
+   return
+99 write(olun,*) '** Error in subroutine pvu_config'
+   ier = 1
+end subroutine pvu_config
 
 ! ------------------------------------------------------------------------------
 ! -- The main purpose of this module, generate a string from value and uncert
@@ -274,13 +358,13 @@ subroutine pvu_gen_str( real_val, real_err, str_out, ier)
 
    case (OUTPUT_FORMAT_LATEX_PLUSMINUS)
       ! -- 1234 \pm 0.012 \times 10^{-3}
-      str_out = trim(str_val)//' \pm '//trim(str_err_pm)//&
-         trim(str_exp_times)
+      str_out = '$'//trim(str_val)//' \pm '//trim(str_err_pm)//&
+         trim(str_exp_times)//'$'
 
    case (OUTPUT_FORMAT_LATEX_PARENTHESIS)
       ! -- 1234(12) \times 10^{-3}
-      str_out = trim(str_val)//'('//trim(str_err_paren)//')'//&
-         trim(str_exp_times)
+      str_out = '$'//trim(str_val)//'('//trim(str_err_paren)//')'//&
+         trim(str_exp_times)//'$'
 
    end select
 
@@ -452,9 +536,81 @@ subroutine pvu_test_gen_str( real_val, real_err, expected_str, ier)
 end subroutine pvu_test_gen_str
 
 ! ------------------------------------------------------------------------------
+! -- Write a value/uncertainty pair in two ways to a latex file
+! -- Intended to be compiled and manually compared to each other
+! -- pvu_test_tex_init must be called first
+! ------------------------------------------------------------------------------
+subroutine pvu_test_tex_write( real_val, real_err, ier)
+   real(wp), intent(IN) :: real_val, real_err
+   integer, intent(OUT) :: ier
+   character(len=strlen) :: str1, str2
+
+   ! -- Generate two ways
+   call pvu_config(ier, output_format=OUTPUT_FORMAT_SIUNITX_PLUSMINUS)
+   if (ier/=0) goto 99
+
+   call pvu_gen_str( real_val, real_err, str1, ier)
+   if (ier/=0) goto 99
+
+   call pvu_config(ier, output_format=OUTPUT_FORMAT_LATEX_PARENTHESIS)
+   if (ier/=0) goto 99
+
+   call pvu_gen_str( real_val, real_err, str2, ier)
+   if (ier/=0) goto 99
+
+   call pvu_config(ier, output_format=OUTPUT_FORMAT_DEFAULT)
+   if (ier/=0) goto 99
+
+   write(fid_tt,'(3x,a,2x,"&",3x,a,2x,"\\")') str1, str2
+
+   return
+99 write(olun,*) '** Error in subroutine pvu_test_tex_write'
+   ier = 1
+end subroutine pvu_test_tex_write
+
+! ------------------------------------------------------------------------------
+! -- Initialize latex file to have values written to it
+! ------------------------------------------------------------------------------
+subroutine pvu_test_tex_init(ier)
+   integer, intent(OUT) :: ier
+
+   ier = 0
+
+   open(fid_tt, file=trim(fname_tex_test), action='write', status='replace')
+
+   write(fid_tt,'(a)') '\documentclass{article}'
+   write(fid_tt,'(a)') '\usepackage{siunitx}'
+   write(fid_tt,'(a)') '\usepackage[onehalfspacing]{setspace}'
+   write(fid_tt,'(a)') '\begin{document}'
+   write(fid_tt,'(a)') '\begin{tabular}{ l r }'
+   write(fid_tt,'(a)') '   With siunitx & Vanilla \LaTeX \\'
+
+end subroutine pvu_test_tex_init
+
+! ------------------------------------------------------------------------------
+! -- Finalize the latex file
+! ------------------------------------------------------------------------------
+subroutine pvu_test_tex_finalize(ier)
+   integer, intent(OUT) :: ier
+
+   ier = 0
+
+   write(fid_tt,'(a)') '\end{tabular}'
+   write(fid_tt,'(a)') '\end{document}'
+
+   close(fid_tt)
+
+   write(olun,*) '-- Wrote test latex file, build: "pdflatex '//&
+      trim(fname_tex_test)//'"'
+
+end subroutine pvu_test_tex_finalize
+
+
+! ------------------------------------------------------------------------------
 ! -- Perform self test, primarily to aid development. Only works with defaults.
 ! -- On success, PASSED is printed with ier=0
 ! -- On failure, FAILED is printed with ier=1
+! -- Should be run with the defaults
 ! ------------------------------------------------------------------------------
 subroutine pvu_self_test(ier)
    integer, intent(OUT) :: ier
@@ -466,10 +622,6 @@ subroutine pvu_self_test(ier)
    call pvu_test_process_uncertainty(0.0123_wp, '12', 2, -3, jer)
    if (jer/=0) ier = 2
    call pvu_test_process_uncertainty(0.0149_wp, '15', 2, -3, jer)
-   if (jer/=0) ier = 2
-   call pvu_test_process_uncertainty(0.0150_wp, '2', 1, -2, jer)
-   if (jer/=0) ier = 2
-   call pvu_test_process_uncertainty(0.0179_wp, '2', 1, -2, jer)
    if (jer/=0) ier = 2
    call pvu_test_process_uncertainty(0.0195_wp, '2', 1, -2, jer)
    if (jer/=0) ier = 2
@@ -486,32 +638,78 @@ subroutine pvu_self_test(ier)
    call pvu_test_process_uncertainty(0.095_wp, '10', 2, -2, jer)
    if (jer/=0) ier = 2
 
+   ! -- These depend on mode, only a few modes were tested
+   call pvu_test_process_uncertainty(0.0150_wp, '15', 2, -3, jer)
+   if (jer/=0) ier = 2
+   call pvu_test_process_uncertainty(0.0179_wp, '18', 2, -3, jer)
+   if (jer/=0) ier = 2
+
+   call pvu_config(jer, mode_uncert_sf=MODE_UNCERT_SF_FIFTEEN)
+   if (jer/=0) goto 99
+
+   call pvu_test_process_uncertainty(0.0150_wp, '2', 1, -2, jer)
+   if (jer/=0) ier = 2
+   call pvu_test_process_uncertainty(0.0179_wp, '2', 1, -2, jer)
+   if (jer/=0) ier = 2
+
+   call pvu_config(jer, mode_uncert_sf=MODE_UNCERT_SF_DEFAULT)
+   if (jer/=0) goto 99
+
    ! -- Test full
    call pvu_test_gen_str(1.234_wp, 0.012_wp, '\num{1.234 \pm 0.012}', jer)
    if (jer/=0) ier = 2
    call pvu_test_gen_str(1.234_wp, 0.024_wp, '\num{1.23 \pm 0.02}', jer)
    if (jer/=0) ier = 2
-   call pvu_test_gen_str(1.234_wp,20.024_wp, '\num{0 \pm 2 e1}', jer)
+   call pvu_test_gen_str(1.234_wp, 20.024_wp, '\num{0 \pm 2 e1}', jer)
    if (jer/=0) ier = 2
-   call pvu_test_gen_str(35.234_wp,0.024_wp, '\num{35.23 \pm 0.02}', jer)
+   call pvu_test_gen_str(35.234_wp, 0.024_wp, '\num{35.23 \pm 0.02}', jer)
    if (jer/=0) ier = 2
-   call pvu_test_gen_str(99.99999_wp,0.001_wp, '\num{100.0000 \pm 0.0010}', jer)
+   call pvu_test_gen_str(8.123_wp, 12.024_wp, '\num{8 \pm 12}', jer)
    if (jer/=0) ier = 2
-   call pvu_test_gen_str(99.99999_wp,12._wp, '\num{100 \pm 12}', jer)
+   call pvu_test_gen_str(99.99999_wp, 0.001_wp, '\num{100.0000 \pm 0.0010}', jer)
    if (jer/=0) ier = 2
-   call pvu_test_gen_str(99.99999_wp,30._wp, '\num{1.0 \pm 0.3 e2}', jer)
+   call pvu_test_gen_str(99.99999_wp, 12._wp, '\num{100 \pm 12}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(99.99999_wp, 30._wp, '\num{1.0 \pm 0.3 e2}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(100._wp, 0._wp, '\num{100 \pm 0}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(0._wp, 0._wp, '\num{0 \pm 0}', jer)
    if (jer/=0) ier = 2
 
+   ! -- Test siunitx by writing to latex file in two ways
+   call pvu_test_tex_init(jer)
+   if (jer/=0) goto 99
+
+   call pvu_test_tex_write( 3.0_wp, 3.0_wp, jer)
+   if (jer/=0) goto 99
+   call pvu_test_tex_write( 3.0_wp, 0.3_wp, jer)
+   if (jer/=0) goto 99
+   call pvu_test_tex_write( 1.234_wp, 0.012_wp, jer)
+   if (jer/=0) goto 99
+   call pvu_test_tex_write( 123.53_wp, 0.9_wp, jer)
+   if (jer/=0) goto 99
+   call pvu_test_tex_write( 2500.53_wp, 0.9_wp, jer)
+   if (jer/=0) goto 99
+   call pvu_test_tex_write( 2500.53_wp, 10.9_wp, jer)
+   if (jer/=0) goto 99
+
+   call pvu_test_tex_finalize(jer)
+   if (jer/=0) goto 99
+
    if (ier==0) then
-      write(olun,*) '-- Testing parse_value_uncertainty module ===== PASSED ====='
+      write(olun,'(a,20x,a)') ' -- Testing parse_value_uncertainty module', &
+         '===== PASSED ====='
    else
-      write(olun,*) '-- Testing parse_value_uncertainty module ===== FAILED ====='
+      write(olun,'(a,20x,a)') ' -- Testing parse_value_uncertainty module', &
+         '===== FAILED ====='
    endif
 
    return
-! 99 write(olun,*) '** Error in subroutine pvu_self_test'
-!    write(olun,*) '** Testing parse_value_uncertainty module ===== FAILED ====='
-!    ier = 1
+99 write(olun,*) '** Error in subroutine pvu_self_test'
+   write(olun,*) '** Testing parse_value_uncertainty module ===== FAILED ====='
+   ier = 1
 end subroutine pvu_self_test
 
 end module parse_value_uncertainty
+! ------------------------------------------------------------------------------

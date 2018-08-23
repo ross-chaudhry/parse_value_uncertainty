@@ -1,3 +1,7 @@
 self_test_driver
 *.o
 *.mod
+pvu_test.aux
+pvu_test.log
+pvu_test.pdf
+pvu_test.tex
