@@ -1,6 +1,6 @@
 ! ------------------------------------------------------------------------------
 ! -- Parse Value Uncertainty
-! -- Constructs string for a given value and uncertainty
+! -- Constructs a string for a given value and uncertainty
 ! -- Author: Ross S. Chaudhry, August 2018
 !
 ! -- Sample usage:
@@ -110,6 +110,17 @@
 !        MODE_UNCERT_SF_DEFAULT     set to MODE_UNCERT_SF_NINETEEN
 !
 !    ld                 Print verbose output (Local Debugging), true/false
+!
+! Issues
+! ------
+!    The string \num{3.} is parsed to 3.0, so trailing decimals are stripped.
+!    This has the side-effect of fixing a bug in siunitx where \num{3. \pm 3.}
+!    becomes 3.0(3), the bug is mentioned here:
+!    https://tex.stackexchange.com/questions/446074/wrong-value-with-decimals-and-uncertainty-in-siunitx
+!
+!    Zero uncertainty is causes a siunitx crash using the \pm input format,
+!    so parenthesis format is used instead for siunitx when err=0
+!    Bug report is here: https://github.com/josephwright/siunitx/issues/349
 !
 ! ------------------------------------------------------------------------------
 
@@ -358,6 +369,14 @@ subroutine pvu_gen_str( real_val, real_err, str_out, ier)
       ! -- \num{1234 \pm 0.012 e-3}
       str_out = '\num{'//trim(str_val)//' \pm '//trim(str_err_pm)//&
          trim(str_exp_e)//'}'
+
+      ! -- There appears to be a bug in siunitx where `\pm 0` causes an error
+      ! -- Therefore, for this case only, revert to parenthesis format
+      ! -- Bug report: https://github.com/josephwright/siunitx/issues/349
+      if (real_err==0._wp) then
+         str_out = '\num{'//trim(str_val)//'('//trim(str_err_pm)//')'//&
+            trim(str_exp_e)//'}'
+      endif
 
    case (OUTPUT_FORMAT_SIUNITX_PARENTHESIS)
       ! -- \num{1234(12) e-3}
@@ -681,9 +700,9 @@ subroutine pvu_self_test(ier)
    if (jer/=0) ier = 2
    call pvu_test_gen_str(99.99999_wp, 30._wp, '\num{1.0 \pm 0.3 e2}', jer)
    if (jer/=0) ier = 2
-   call pvu_test_gen_str(100._wp, 0._wp, '\num{100 \pm 0}', jer)
+   call pvu_test_gen_str(100._wp, 0._wp, '\num{100(0)}', jer)
    if (jer/=0) ier = 2
-   call pvu_test_gen_str(0._wp, 0._wp, '\num{0 \pm 0}', jer)
+   call pvu_test_gen_str(0._wp, 0._wp, '\num{0(0)}', jer)
    if (jer/=0) ier = 2
 
    ! -- Test siunitx by writing to latex file in two ways
@@ -701,6 +720,12 @@ subroutine pvu_self_test(ier)
    call pvu_test_tex_write( 2500.53_wp, 0.9_wp, jer)
    if (jer/=0) goto 99
    call pvu_test_tex_write( 2500.53_wp, 10.9_wp, jer)
+   if (jer/=0) goto 99
+   call pvu_test_tex_write( 1._wp, 0._wp, jer)
+   if (jer/=0) goto 99
+   call pvu_test_tex_write( 100._wp, 0._wp, jer)
+   if (jer/=0) goto 99
+   call pvu_test_tex_write( 0._wp, 0._wp, jer)
    if (jer/=0) goto 99
 
    call pvu_test_tex_finalize(jer)
