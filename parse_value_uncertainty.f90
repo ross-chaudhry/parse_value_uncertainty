@@ -51,14 +51,21 @@
 !
 !        OUTPUT_FORMAT_SIUNITX_PARENTHESIS
 !        Latex with siunitx, with parenthesis, eg '\num{1.23(8) e-5}'
-!        Note that siunitx will accept either format and may be configured
-!        to give various outputs.
+!
+!        OUTPUT_FORMAT_SCOLUMN_PLUSMINUS
+!        Latex with siunitx, inside S column, eg '1.23 \pm 0.08 e-5'
+!
+!        OUTPUT_FORMAT_SCOLUMN_PARENTHESIS
+!        Latex with siunitx, inside S column, eg '1.23(8) e-5'
+!
+!         * Note that siunitx will accept either () or \pm uncertainty format
+!           format and may be configured to give various outputs.
 !
 !        OUTPUT_FORMAT_LATEX_PLUSMINUS
-!        Latex vanilla with pm, eg '1.23 \pm 0.08 \times 10^{-5}'
+!        Latex vanilla with pm, eg '$1.23 \pm 0.08 \times 10^{-5}$'
 !
 !        OUTPUT_FORMAT_LATEX_PARENTHESIS
-!        Latex vanilla with parenthesis, eg '1.23(8) \times 10^{-5}'
+!        Latex vanilla with parenthesis, eg '$1.23(8) \times 10^{-5}$'
 !
 !        OUTPUT_FORMAT_DEFAULT      set to OUTPUT_FORMAT_SIUNITX_PLUSMINUS
 !
@@ -152,8 +159,10 @@ module parse_value_uncertainty
    ! -- Possible values and defaults, as parameters
    integer, parameter, public :: OUTPUT_FORMAT_SIUNITX_PLUSMINUS     = 1001
    integer, parameter, public :: OUTPUT_FORMAT_SIUNITX_PARENTHESIS   = 1002
-   integer, parameter, public :: OUTPUT_FORMAT_LATEX_PLUSMINUS       = 1003
-   integer, parameter, public :: OUTPUT_FORMAT_LATEX_PARENTHESIS     = 1004
+   integer, parameter, public :: OUTPUT_FORMAT_SCOLUMN_PLUSMINUS     = 1003
+   integer, parameter, public :: OUTPUT_FORMAT_SCOLUMN_PARENTHESIS   = 1004
+   integer, parameter, public :: OUTPUT_FORMAT_LATEX_PLUSMINUS       = 1005
+   integer, parameter, public :: OUTPUT_FORMAT_LATEX_PARENTHESIS     = 1006
    integer, parameter, public :: OUTPUT_FORMAT_DEFAULT = OUTPUT_FORMAT_SIUNITX_PLUSMINUS
 
    integer, parameter, public :: THRESHOLD_SN_POS_DEFAULT            = 3
@@ -365,23 +374,32 @@ subroutine pvu_gen_str( real_val, real_err, str_out, ier)
 
    ! -- Now we write depending on the format
    select case (cur_output_format)
-   case (OUTPUT_FORMAT_SIUNITX_PLUSMINUS)
-      ! -- \num{1234 \pm 0.012 e-3}
-      str_out = '\num{'//trim(str_val)//' \pm '//trim(str_err_pm)//&
-         trim(str_exp_e)//'}'
+   case (OUTPUT_FORMAT_SIUNITX_PLUSMINUS, OUTPUT_FORMAT_SCOLUMN_PLUSMINUS)
+      ! -- \num{1234 \pm 0.012 e-3} or without \num{} wrapper
+      ! -- Construct without wrapper first
+      str_out = trim(str_val)//' \pm '//trim(str_err_pm)//trim(str_exp_e)
 
       ! -- There appears to be a bug in siunitx where `\pm 0` causes an error
       ! -- Therefore, for this case only, revert to parenthesis format
       ! -- Bug report: https://github.com/josephwright/siunitx/issues/349
       if (real_err==0._wp) then
-         str_out = '\num{'//trim(str_val)//'('//trim(str_err_pm)//')'//&
-            trim(str_exp_e)//'}'
+         str_out = trim(str_val)//'('//trim(str_err_pm)//')'//trim(str_exp_e)
+      endif
+
+      ! -- If we are for SIUNITX not SCOLUMN add \num{} wrapper
+      if (cur_output_format==OUTPUT_FORMAT_SIUNITX_PLUSMINUS) then
+         str_out = '\num{'//trim(str_out)//'}'
       endif
 
    case (OUTPUT_FORMAT_SIUNITX_PARENTHESIS)
-      ! -- \num{1234(12) e-3}
-      str_out = '\num{'//trim(str_val)//'('//trim(str_err_paren)//')'//&
-         trim(str_exp_e)//'}'
+      ! -- \num{1234(12) e-3} or without \num{} wrapper
+      ! -- Construct without wrapper first
+      str_out = trim(str_val)//'('//trim(str_err_paren)//')'//trim(str_exp_e)
+
+      ! -- If we are for SIUNITX not SCOLUMN add \num{} wrapper
+      if (cur_output_format==OUTPUT_FORMAT_SIUNITX_PARENTHESIS) then
+         str_out = '\num{'//trim(str_out)//'}'
+      endif
 
    case (OUTPUT_FORMAT_LATEX_PLUSMINUS)
       ! -- $1234 \pm 0.012 \times 10^{-3}$
