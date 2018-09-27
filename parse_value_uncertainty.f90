@@ -166,7 +166,7 @@ module parse_value_uncertainty
    integer, parameter, public :: OUTPUT_FORMAT_DEFAULT = OUTPUT_FORMAT_SIUNITX_PLUSMINUS
 
    integer, parameter, public :: THRESHOLD_SN_POS_DEFAULT            = 3
-   integer, parameter, public :: THRESHOLD_SN_NEG_DEFAULT            = 4
+   integer, parameter, public :: THRESHOLD_SN_NEG_DEFAULT            = 3
 
    integer, parameter, public :: MODE_UNCERT_SF_ONE = 2001
    integer, parameter, public :: MODE_UNCERT_SF_FIFTEEN = 2002
@@ -721,6 +721,26 @@ subroutine pvu_self_test(ier)
    call pvu_test_gen_str(100._wp, 0._wp, '\num{100(0)}', jer)
    if (jer/=0) ier = 2
    call pvu_test_gen_str(0._wp, 0._wp, '\num{0(0)}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(1.234e-1_wp, 0.05e-1_wp, '\num{0.123 \pm 0.005}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(1.234e-2_wp, 0.05e-2_wp, '\num{0.0123 \pm 0.0005}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(1.234e-3_wp, 0.05e-3_wp, '\num{1.23 \pm 0.05 e-3}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(1.234e-4_wp, 0.05e-4_wp, '\num{1.23 \pm 0.05 e-4}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(1.234_wp, 0.05_wp, '\num{1.23 \pm 0.05}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(12.34_wp, 0.5_wp, '\num{12.3 \pm 0.5}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(123.4_wp, 5._wp, '\num{123 \pm 5}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(123.4_wp, 50._wp, '\num{1.2 \pm 0.5 e2}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(1234._wp, 50._wp, '\num{1.23 \pm 0.05 e3}', jer)
+   if (jer/=0) ier = 2
+   call pvu_test_gen_str(1234._wp, 5._wp, '\num{1.234 \pm 0.005 e3}', jer)
    if (jer/=0) ier = 2
 
    ! -- Test siunitx by writing to latex file in two ways
