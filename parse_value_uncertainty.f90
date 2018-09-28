@@ -742,6 +742,8 @@ subroutine pvu_self_test(ier)
    if (jer/=0) ier = 2
    call pvu_test_gen_str(1234._wp, 5._wp, '\num{1.234 \pm 0.005 e3}', jer)
    if (jer/=0) ier = 2
+   call pvu_test_gen_str(6.123e-5_wp, 13.123e-5_wp, '\num{6 \pm 13 e-5}', jer)
+   if (jer/=0) ier = 2
 
    ! -- Test siunitx by writing to latex file in two ways
    call pvu_test_tex_init(jer)
